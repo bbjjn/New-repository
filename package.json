@@ -1,0 +1,9 @@
+{
+  "name": "football-analysis",
+  "version": "1.0.0",
+  "description": "实时足球数据仪表盘",
+  "main": "index.js",
+  "dependencies": {
+    "node-fetch": "^2.6.9"
+  }
+}
