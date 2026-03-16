@@ -1,0 +1,13 @@
+{
+  "functions": {
+    "api/matches.js": {
+      "maxDuration": 10
+    }
+  },
+  "crons": [
+    {
+      "path": "/api/matches",
+      "schedule": "0 8 * * *"
+    }
+  ]
+}
