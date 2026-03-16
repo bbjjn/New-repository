@@ -1,4 +1,3 @@
-// 从API-Football获取今日比赛、实时比分、赔率、统计
 const fetch = require('node-fetch');
 
 module.exports = async (req, res) => {
@@ -12,86 +11,96 @@ module.exports = async (req, res) => {
     try {
         const today = new Date().toISOString().split('T')[0];
         
-        // 1. 获取今日所有比赛（包含实时比分）
+        // 只关注的联赛ID：英超39、西甲140、德甲78、意甲135、法甲61、世界杯1
+        const TARGET_LEAGUES = [39, 140, 78, 135, 61, 1];
+        
+        // 获取今日所有比赛
         const fixturesRes = await fetch(
             `https://v3.football.api-sports.io/fixtures?date=${today}`,
             { headers: { 'x-apisports-key': API_KEY } }
         );
+        
+        if (!fixturesRes.ok) {
+            return res.status(fixturesRes.status).json({ error: 'API request failed' });
+        }
+
         const fixturesData = await fixturesRes.json();
         
         if (!fixturesData.response || fixturesData.response.length === 0) {
             return res.json({ matches: [] });
         }
 
-        // 2. 获取今日比赛的赔率（使用另一个接口，免费版可能限制，我们只取第一场比赛的赔率做演示）
-        // 注意：免费版可能不支持赔率接口，需要根据实际情况调整。如果不可用，可以暂时模拟显示。
-        let oddsData = [];
+        // 过滤出目标联赛的比赛
+        const targetFixtures = fixturesData.response.filter(fixture => 
+            TARGET_LEAGUES.includes(fixture.league.id)
+        );
+
+        // 获取预测数据（尝试）
+        let predictionsMap = new Map();
         try {
-            const oddsRes = await fetch(
-                `https://v3.football.api-sports.io/odds?date=${today}`,
-                { headers: { 'x-apisports-key': API_KEY } }
-            );
-            const oddsJson = await oddsRes.json();
-            oddsData = oddsJson.response || [];
+            // 注意：predictions 接口可能需要付费，我们先尝试调用
+            // 如果免费版不支持，这里会失败，但不影响主流程
+            for (const fixture of targetFixtures) {
+                const predRes = await fetch(
+                    `https://v3.football.api-sports.io/predictions?fixture=${fixture.fixture.id}`,
+                    { headers: { 'x-apisports-key': API_KEY } }
+                );
+                if (predRes.ok) {
+                    const predData = await predRes.json();
+                    if (predData.response && predData.response[0]) {
+                        predictionsMap.set(fixture.fixture.id, predData.response[0]);
+                    }
+                }
+                // 避免请求过快
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
         } catch (e) {
-            console.log('Odds API not available with free plan, using mock');
+            console.log('Predictions not available with free plan');
         }
 
         // 构建返回数据
-        const matches = fixturesData.response.map(fixture => {
+        const matches = targetFixtures.map(fixture => {
             const fixtureId = fixture.fixture.id;
-            const homeTeam = fixture.teams.home.name;
-            const awayTeam = fixture.teams.away.name;
-            const league = fixture.league.name;
-            const date = fixture.fixture.date;
+            const prediction = predictionsMap.get(fixtureId);
             
-            // 实时比分
-            const score = fixture.goals;
-            const status = fixture.fixture.status.short; // 'FT', 'LIVE', 'HT', etc.
+            // 提取预测信息（如果有）
+            let predictionText = '暂无分析';
+            let homeProb = '?', drawProb = '?', awayProb = '?';
             
-            // 实时统计（如控球率、射门等）
-            const stats = fixture.statistics || [];
-            // 简化：提取控球率（如果有）
-            let homePossession = 'N/A', awayPossession = 'N/A';
-            stats.forEach(teamStat => {
-                if (teamStat.team.id === fixture.teams.home.id) {
-                    const possessionStat = teamStat.statistics.find(s => s.type === 'Ball Possession');
-                    if (possessionStat) homePossession = possessionStat.value;
-                } else {
-                    const possessionStat = teamStat.statistics.find(s => s.type === 'Ball Possession');
-                    if (possessionStat) awayPossession = possessionStat.value;
-                }
-            });
-
-            // 赔率信息（从oddsData中匹配，这里简化处理）
-            const matchOdds = oddsData.find(o => o.fixture.id === fixtureId);
-            let odds = { home: '-', draw: '-', away: '-' };
-            if (matchOdds && matchOdds.bookmakers && matchOdds.bookmakers[0]) {
-                const bet = matchOdds.bookmakers[0].bets.find(b => b.name === 'Match Winner');
-                if (bet) {
-                    odds.home = bet.values.find(v => v.value === 'Home')?.odd || '-';
-                    odds.draw = bet.values.find(v => v.value === 'Draw')?.odd || '-';
-                    odds.away = bet.values.find(v => v.value === 'Away')?.odd || '-';
-                }
+            if (prediction) {
+                // 预测结果
+                const winner = prediction.predictions.winner;
+                const winProb = prediction.predictions.winner_comment || '';
+                predictionText = `预测: ${winner?.name || '未知'} 胜出 ${winProb}`;
+                
+                // 百分比概率
+                const percent = prediction.predictions.percent || {};
+                homeProb = percent.home || '?';
+                drawProb = percent.draw || '?';
+                awayProb = percent.away || '?';
             }
 
             return {
-                fixtureId,
-                league,
-                homeTeam,
-                awayTeam,
-                date,
-                status,
-                score: `${score.home ?? 0} : ${score.away ?? 0}`,
-                homePossession,
-                awayPossession,
-                odds
+                league: fixture.league.name,
+                leagueId: fixture.league.id,
+                homeTeam: fixture.teams.home.name,
+                awayTeam: fixture.teams.away.name,
+                date: fixture.fixture.date,
+                status: fixture.fixture.status.short,
+                score: `${fixture.goals.home ?? 0} : ${fixture.goals.away ?? 0}`,
+                // 赔率暂时无法获取，留空
+                odds: { home: '-', draw: '-', away: '-' },
+                // 预测分析
+                prediction: predictionText,
+                homeProb,
+                drawProb,
+                awayProb
             };
         });
 
         res.json({ matches });
     } catch (error) {
-        console.error(error);
+        console.error('Serverless function error:', error);
         res.status(500).json({ error: 'Failed to fetch data' });
     }
 };
